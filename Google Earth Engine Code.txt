@@ -1,0 +1,189 @@
+// Definir el área de interés (AOI)
+var aoi = ee.Geometry.Point([-78.63, -1.26]); // Coordenadas de ejemplo
+var geometry = aoi.buffer(500); // Buffer alrededor del punto de interés
+
+// Colección de bandas
+var bandas = {
+  "B1": [], 
+  "B2": [], 
+  "B3": [],
+  "B4": [], 
+  "B5": [],
+  "B6": [], 
+  "B7": [], 
+  "B8": [], 
+  "B8A": [], 
+  "B9": [],  
+  "B11": [], 
+  "B12": [], 
+  "AOT": [], 
+  "WVP": [], 
+  "SCL": [],
+  "TCI_R": [],
+  "TCI_G": [],
+  "TCI_B": [],
+  "MSK_CLDPRB": [],
+  "MSK_SNWPRB": [],
+  "QA10": [], 
+  "QA20": [], 
+  "QA60": [], 
+};
+
+// Diccionario de objetos UI
+var dicobjetos = {
+  Sliderfecha: ui.DateSlider({start: '2015-01-01', end: ee.Date(Date.now()), period: 15, onChange: function(){}}),
+  select: {
+    b1: ui.Select({items: Object.keys(bandas), placeholder: 'Select Band', onChange: function(){}}),
+    b2: ui.Select({items: Object.keys(bandas), placeholder: 'Select Band', onChange: function(){}}),
+    b3: ui.Select({items: Object.keys(bandas), placeholder: 'Select Band', onChange: function(){}}),
+  },
+  label: ui.Label('Min: ', {}),
+  slider: ui.Slider({min: 500, max: 5000, step: 100, onChange: function(){}}),
+  label1: ui.Label('Max: ', {}),
+  slider1: ui.Slider({min: 500, max: 5000, step: 100, onChange: function(){}}),
+  label2: ui.Label('Gamma: ', {}),
+  slider2: ui.Slider({min: 0, max: 3, step: 0.1, onChange: function(){}}),
+  cerrarPanel: ui.Button({
+    label: 'Close', 
+    onClick: function(click){
+      panel.style().set('shown', false);
+      dicobjetos.abrirPanel.style().set('shown', true);
+    }, 
+    style: {}
+  }),
+  abrirPanel: ui.Button({
+    label: 'Open', 
+    onClick: function(click){
+      panel.style().set('shown', true);
+      dicobjetos.abrirPanel.style().set('shown', false);
+    }, 
+    style: {position: 'bottom-left', backgroundColor: 'ACC2C8', color: '21ACF7'}
+  })
+};
+
+var panelBandas = ui.Panel({widgets: [
+  dicobjetos.select.b1,
+  dicobjetos.select.b2,
+  dicobjetos.select.b3
+], layout: ui.Panel.Layout.Flow('horizontal'), style: {backgroundColor: '00000000'}});
+
+dicobjetos.tempMinLabel = ui.Label('Temp Min: ', {});
+dicobjetos.tempMaxLabel = ui.Label('Temp Max: ', {});
+
+var boton = ui.Button({
+  label: 'Apply', 
+  onClick: function(b){
+    var startDate = ee.Date(dicobjetos.Sliderfecha.getValue()[0]).format('YYYY-MM-dd');
+    var endDate = ee.Date(dicobjetos.Sliderfecha.getValue()[1]).format('YYYY-MM-dd');
+    
+    var coleccion = ee.ImageCollection('COPERNICUS/S2_SR')
+      .filterBounds(geometry)
+      .filterDate(startDate, endDate)
+      .filterMetadata('CLOUDY_PIXEL_PERCENTAGE', 'less_than', 99)
+      .map(function(image) {
+        return image.addBands(image.select('B11').rename('Temperature'));
+      });
+
+    var mosaic = coleccion.mosaic();
+
+    var tempMin = mosaic.select('Temperature').reduceRegion({
+      reducer: ee.Reducer.min(),
+      geometry: geometry,
+      scale: 10,
+      maxPixels: 1e13
+    }).get('Temperature');
+
+    var tempMax = mosaic.select('Temperature').reduceRegion({
+      reducer: ee.Reducer.max(),
+      geometry: geometry,
+      scale: 10,
+      maxPixels: 1e13
+    }).get('Temperature');
+
+    tempMin.evaluate(function(val) {
+      if (val !== null) {
+        dicobjetos.tempMinLabel.setValue('Temp Min: ' + (val / 400).toFixed(2) + ' °C');
+      } else {
+        dicobjetos.tempMinLabel.setValue('Temp Min: No Data');
+      }
+    });
+
+    tempMax.evaluate(function(val) {
+      if (val !== null) {
+        dicobjetos.tempMaxLabel.setValue('Temp Max: ' + (val / 100).toFixed(2) + ' °C');
+      } else {
+        dicobjetos.tempMaxLabel.setValue('Temp Max: No Data');
+      }
+    });
+
+    var layer = ui.Map.Layer(mosaic, {bands: [dicobjetos.select.b1.getValue(), dicobjetos.select.b2.getValue(), dicobjetos.select.b3.getValue()],
+      min: dicobjetos.slider.getValue(), max: dicobjetos.slider1.getValue(), gamma: dicobjetos.slider2.getValue() }, 'Sentinel 2');
+    Map.layers().set(0, layer);
+
+    // Calcular NDVI y series temporales
+    var ndviCollection = coleccion.map(function(image) {
+      var ndvi = image.normalizedDifference(['B8', 'B4']).rename('NDVI');
+      return image.addBands(ndvi);
+    });
+
+    var ndviChart = ui.Chart.image.series({
+      imageCollection: ndviCollection.select('NDVI'),
+      region: geometry,
+      reducer: ee.Reducer.mean(),
+      scale: 30,
+      xProperty: 'system:time_start'
+    }).setOptions({
+      title: 'NDVI Time Series',
+      vAxis: {title: 'NDVI'},
+      hAxis: {title: 'Date'},
+      lineWidth: 1,
+      pointSize: 3
+    });
+
+    var seriesChart = ui.Chart.image.series({
+      imageCollection: coleccion,
+      region: geometry,
+      reducer: ee.Reducer.mean(),
+      scale: 30,
+      xProperty: 'system:time_start'
+    }).setOptions({
+      title: 'Image Collection Time Series',
+      vAxis: {title: 'Mean Value'},
+      hAxis: {title: 'Date'},
+      lineWidth: 1,
+      pointSize: 3
+    });
+
+    // Panel para gráficos
+    var panelGraficos = ui.Panel({layout: ui.Panel.Layout.Flow('vertical'), style: {backgroundColor: 'FFFFFF', position: 'top-right'}});
+    panelGraficos.clear();
+    panelGraficos.add(ndviChart);
+    panelGraficos.add(seriesChart);
+    Map.add(panelGraficos);
+  }
+});
+
+/*PANEL PRINCIPAL*/
+
+var panel = ui.Panel({widgets: [
+  dicobjetos.Sliderfecha,
+  panelBandas, 
+  dicobjetos.label,
+  dicobjetos.slider,
+  dicobjetos.label1,
+  dicobjetos.slider1,
+  dicobjetos.label2,
+  dicobjetos.slider2, 
+  dicobjetos.tempMinLabel, 
+  dicobjetos.tempMaxLabel,
+  boton,
+  dicobjetos.cerrarPanel
+], layout: ui.Panel.Layout.Flow('vertical'), style: {backgroundColor: '00005555', position: 'bottom-left'}});
+
+Map.add(panel);
+Map.add(dicobjetos.abrirPanel);
+dicobjetos.abrirPanel.style().set('shown', false);
+
+// Centrar el mapa en el AOI y añadir la capa del AOI
+Map.centerObject(geometry, 12);
+Map.addLayer(geometry, {color: 'red'}, 'AOI');
